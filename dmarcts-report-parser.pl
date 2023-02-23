@@ -74,6 +74,8 @@ use PerlIO::gzip;
 use File::Basename ();
 use File::MimeInfo;
 use IO::Socket::SSL;
+use WWW::Curl::Easy;
+use Json;
 #use IO::Socket::SSL 'debug3';
 
 
@@ -120,7 +122,7 @@ sub show_usage {
 our ($debug, $delete_reports, $delete_failed, $reports_replace, $maxsize_xml, $compress_xml,
 	$dbtype, $dbname, $dbuser, $dbpass, $dbhost, $dbport, $db_tx_support,
   $imapserver, $imapport, $imapuser, $imappass, $imapignoreerror, $imapssl, $imaptls, $imapmovefolder,
-	$imapmovefoldererr, $imapreadfolder, $imapopt, $tlsverify, $processInfo);
+	$imapmovefoldererr, $imapreadfolder, $imapopt, $tlsverify, $processInfo, $imapoauth, $client_id, $client_secret, $grant_type, $scope, $site);
 
 # defaults
 $maxsize_xml 	= 50000;
@@ -302,14 +304,36 @@ if ($reports_source == TS_IMAP) {
 	print "connection to $imapserver with Ssl => $imapssl, User => $imapuser, Ignoresizeerrors => $imapignoreerror\n" if $debug;
 
 	# Setup connection to IMAP server.
-	my $imap = Mail::IMAPClient->new(
-	  Server     => $imapserver,
-	  Port       => $imapport,
-	  Ssl        => $imapssl,
-	  Starttls   => $imapopt,
-	  Debug      => $debug,
-	  Socketargs => $socketargs
-	)
+	if ($imapoauth == 1){
+		my $curl = WWW::Curl::Easy->new;
+		$curl->setopt(CURLOPT_URL, $site);
+		my $response_body;
+		$curl->setopt(CURLOPT_WRITEDATA,\$response_body);
+		$curl->setopt(CURLOPT_POST, 1);
+		$curl->setopt(CURLOPT_POSTFIELDS, "client_id=$client_id&client_secret=$client_secret&grant_type=$grant_type&scope=$scope");
+		$curl->perform;
+		my $token = JSON->new->decode($response_body)->{"access_token"};
+		my $oauth_sign = encode_base64("user=".$imapuser."\x01auth=Bearer $token\x01\x01", '');
+		$imap = Mail::IMAPClient->new( Server => $imapserver,
+				Port => $imapport,
+				Ssl => $imapssl,
+				Starttls => $imapopt,
+				Debug => $debug,
+				Socketargs => $socketargs,
+				IgnoreSizeErrors => 1)
+		or die "IMAP Failure: $@";
+		$imap->authenticate('XOAUTH2', sub { return $oauth_sign }) or die("Auth error: ". $imap->LastError);
+	}
+	else {
+		my $imap = Mail::IMAPClient->new(
+		Server     => $imapserver,
+		Port       => $imapport,
+		Ssl        => $imapssl,
+		Starttls   => $imapopt,
+		Debug      => $debug,
+		Socketargs => $socketargs
+		)
+	}
 	# module uses eval, so we use $@ instead of $!
 	or die "$scriptname: IMAP Failure: $@";
 
